@@ -7,7 +7,7 @@
   "models": [
     {
       "api": "rdk:service:vision",
-      "model": "viam:detections-to-segments:detections-to-segments",
+      "model": "viam:vision:detections-to-segments",
       "short_description": "Provide a short (100 characters or less) description of this model here",
       "markdown_link": "README.md#model-viamdetections-to-segmentsdetections-to-segments"
     }

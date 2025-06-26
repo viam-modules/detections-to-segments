@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	DetectionsToSegments = resource.NewModel("viam", "detections-to-segments", "detections-to-segments")
+	DetectionsToSegments = resource.NewModel("viam", "vision", "detections-to-segments")
 	errUnimplemented     = errors.New("unimplemented")
 )
 
