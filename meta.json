@@ -1,0 +1,28 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "viam:detections-to-segments",
+  "visibility": "public",
+  "url": "",
+  "description": "Modular vision service: detections-to-segments",
+  "models": [
+    {
+      "api": "rdk:service:vision",
+      "model": "viam:detections-to-segments:detections-to-segments",
+      "short_description": "Provide a short (100 characters or less) description of this model here",
+      "markdown_link": "README.md#model-viamdetections-to-segmentsdetections-to-segments"
+    }
+  ],
+  "applications": null,
+  "markdown_link": "README.md",
+  "entrypoint": "bin/detections-to-segments",
+  "first_run": "",
+  "build": {
+    "build": "make module.tar.gz",
+    "setup": "make setup",
+    "path": "bin/module.tar.gz",
+    "arch": [
+      "linux/amd64",
+      "linux/arm64"
+    ]
+  }
+}
