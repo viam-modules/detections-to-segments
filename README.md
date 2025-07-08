@@ -1,18 +1,17 @@
-# Module detections-to-segments 
+# Detection to Segments Module
 
-Provide a description of the purpose of the module and any relevant information.
-
-## Model viam:detections-to-segments:detections-to-segments
-
-Provide a description of the model and any relevant information.
+This module provides a vision service model takes 2D bounding boxes from an object detector, and, using the intrinsic parameters of the chosen camera, projects the pixels in the bounding box to points in 3D space. If the chosen camera is not equipped to do projections from 2D to 3D, then this vision model will fail. The label and the pixels associated with the 2D detections become the label and point cloud associated with the 3D segmenter.
 
 ### Configuration
 The following attribute template can be used to configure this model:
 
 ```json
 {
-"attribute_1": <float>,
-"attribute_2": <string>
+  "sigma": 1.25,
+  "camera_name": "realsense-camera",
+  "detector_name": "color-detector-1",
+  "confidence_threshold_pct": 0.5,
+  "mean_k": 5
 }
 ```
 
