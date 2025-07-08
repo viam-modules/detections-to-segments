@@ -12,32 +12,23 @@ import (
 	"go.viam.com/rdk/components/camera"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
-	"go.viam.com/rdk/robot"
 	"go.viam.com/rdk/services/vision"
-	"go.viam.com/rdk/utils"
 	"go.viam.com/rdk/vision/objectdetection"
-	"go.viam.com/rdk/vision/segmentation"
 )
 
 
-var (
-	DetectionsToSegments = resource.NewModel("viam", "vision", "detections-to-segments")
-)
+var DetectionsToSegments = resource.NewModel("viam", "vision", "detections-to-segments")
 
 func init() {
-	resource.RegisterService(vision.API, DetectionsToSegments, resource.Registration[vision.Service, *segmentation.DetectionSegmenterConfig]{
-		DeprecatedRobotConstructor: func(
-			ctx context.Context, r any, c resource.Config, logger logging.Logger,
+	resource.RegisterService(vision.API, DetectionsToSegments, resource.Registration[vision.Service, *DetectionSegmenterConfig]{
+		Constructor: func(
+			ctx context.Context, deps resource.Dependencies, c resource.Config, logger logging.Logger,
 		) (vision.Service, error) {
-			attrs, err := resource.NativeConfig[*segmentation.DetectionSegmenterConfig](c)
+			attrs, err := resource.NativeConfig[*DetectionSegmenterConfig](c)
 			if err != nil {
 				return nil, err
 			}
-			actualR, err := utils.AssertType[robot.Robot](r)
-			if err != nil {
-				return nil, err
-			}
-			return register3DSegmenterFromDetector(ctx, c.ResourceName(), attrs, actualR)
+			return register3DSegmenterFromDetector(ctx, c.ResourceName(), attrs, deps, logger)
 		},
 	})
 }
@@ -46,15 +37,16 @@ func init() {
 func register3DSegmenterFromDetector(
 	ctx context.Context,
 	name resource.Name,
-	conf *segmentation.DetectionSegmenterConfig,
-	r robot.Robot,
+	conf *DetectionSegmenterConfig,
+	deps resource.Dependencies,
+	logger logging.Logger,
 ) (vision.Service, error) {
 	_, span := trace.StartSpan(ctx, "service::vision::register3DSegmenterFromDetector")
 	defer span.End()
 	if conf == nil {
 		return nil, errors.New("config for 3D segmenter made from a detector cannot be nil")
 	}
-	detectorService, err := vision.FromRobot(r, conf.DetectorName)
+	detectorService, err := vision.FromDependencies(deps, conf.DetectorName)
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not find necessary dependency, detector %q", conf.DetectorName)
 	}
@@ -65,15 +57,42 @@ func register3DSegmenterFromDetector(
 	detector := func(ctx context.Context, img image.Image) ([]objectdetection.Detection, error) {
 		return detectorService.Detections(ctx, img, nil)
 	}
-	segmenter, err := segmentation.DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh)
+	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create 3D segmenter from detector")
 	}
 	if conf.DefaultCamera != "" {
-		_, err = camera.FromRobot(r, conf.DefaultCamera)
+		_, err = camera.FromDependencies(deps, conf.DefaultCamera)
 		if err != nil {
 			return nil, errors.Errorf("could not find camera %q", conf.DefaultCamera)
 		}
 	}
-	return vision.NewService(name, r, nil, nil, detector, segmenter, conf.DefaultCamera)
+	return vision.NewService(name, deps, nil, nil, detector, segmenter, conf.DefaultCamera)
+}
+
+func (conf DetectionSegmenterConfig) Validate(path string) ([]string, []string, error) {
+	var deps []string
+	var warnings []string
+
+	if conf.DefaultCamera == "" {
+		return nil, warnings, errors.Errorf("expected a default camera to be specified")
+	}
+	deps = append(deps, conf.DefaultCamera)
+
+	if conf.DetectorName == "" {
+		return nil, warnings, errors.Errorf("expected a detector to be specified")
+	}
+	deps = append(deps, conf.DetectorName)
+
+	if conf.MeanK < 0 {
+		return nil, warnings, errors.Errorf("expected a mean k to be specified")
+	}
+	deps = append(deps, conf.DetectorName)
+
+	if conf.Sigma < 0 {
+		return nil, warnings, errors.Errorf("expected a sigma to be specified")
+	}
+	deps = append(deps, conf.DetectorName)
+
+	return deps, warnings, nil
 }
