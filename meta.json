@@ -3,12 +3,12 @@
   "module_id": "viam:detections-to-segments",
   "visibility": "public",
   "url": "",
-  "description": "Modular vision service: detections-to-segments",
+  "description": "This module converts detections to 3D segments",
   "models": [
     {
       "api": "rdk:service:vision",
       "model": "viam:vision:detections-to-segments",
-      "short_description": "Provide a short (100 characters or less) description of this model here",
+      "short_description": "This module converts detections to 3D segments",
       "markdown_link": "README.md#model-viamdetections-to-segmentsdetections-to-segments"
     }
   ],
