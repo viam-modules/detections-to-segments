@@ -16,7 +16,6 @@ import (
 	"go.viam.com/rdk/vision/objectdetection"
 )
 
-
 var DetectionsToSegments = resource.NewModel("viam", "vision", "detections-to-segments")
 
 func init() {
@@ -67,7 +66,7 @@ func register3DSegmenterFromDetector(
 			return nil, errors.Errorf("could not find camera %q", conf.DefaultCamera)
 		}
 	}
-	return vision.NewService(name, deps, nil, nil, detector, segmenter, conf.DefaultCamera)
+	return vision.NewService(name, deps, logger, nil, nil, detector, segmenter, conf.DefaultCamera)
 }
 
 func (conf DetectionSegmenterConfig) Validate(path string) ([]string, []string, error) {
