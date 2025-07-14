@@ -86,27 +86,27 @@ func register3DSegmenterFromDetector(
 }
 
 func (conf *DetectionSegmenterConfig) Validate(path string) ([]string, []string, error) {
-	var deps []string
-	var warnings []string
+	var requiredDeps []string
+	var optionalDeps []string
 
 	if conf.DefaultCamera != "" {
-		deps = append(deps, conf.DefaultCamera)
+		requiredDeps = append(requiredDeps, conf.DefaultCamera)
 	}
 
 	if conf.DetectorName == "" {
-		return nil, warnings, errors.Errorf("expected a detector to be specified")
+		return nil, optionalDeps, errors.Errorf("expected a detector to be specified")
 	}
-	deps = append(deps, conf.DetectorName)
+	requiredDeps = append(requiredDeps, conf.DetectorName)
 
 	if conf.MeanK <= 0 {
-		return nil, warnings, errors.Errorf("expected a mean k to be specified")
+		return nil, optionalDeps, errors.Errorf("expected a mean k to be specified")
 	}
 
 	if conf.Sigma <= 0 {
-		return nil, warnings, errors.Errorf("expected a sigma to be specified")
+		return nil, optionalDeps, errors.Errorf("expected a sigma to be specified")
 	}
 
-	return deps, warnings, nil
+	return requiredDeps, optionalDeps, nil
 }
 
 // ConvertAttributes changes the AttributeMap input into a DetectionSegmenterConfig.
