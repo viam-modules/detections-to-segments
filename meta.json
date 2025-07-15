@@ -2,14 +2,14 @@
   "$schema": "https://dl.viam.dev/module.schema.json",
   "module_id": "viam:detections-to-segments",
   "visibility": "public",
-  "url": "",
-  "description": "Modular vision service: detections-to-segments",
+  "url": "https://github.com/viam-modules/detections-to-segments",
+  "description": "This module converts detections to 3D segments",
   "models": [
     {
       "api": "rdk:service:vision",
       "model": "viam:vision:detections-to-segments",
-      "short_description": "Provide a short (100 characters or less) description of this model here",
-      "markdown_link": "README.md#model-viamdetections-to-segmentsdetections-to-segments"
+      "short_description": "This module converts detections to 3D segments",
+      "markdown_link": "README.md#example-module-configuration"
     }
   ],
   "applications": null,
@@ -19,10 +19,12 @@
   "build": {
     "build": "make module.tar.gz",
     "setup": "make setup",
-    "path": "bin/module.tar.gz",
+    "path": "module.tar.gz",
     "arch": [
       "linux/amd64",
-      "linux/arm64"
-    ]
+      "linux/arm64",
+      "darwin/arm64"
+    ],
+    "darwin_deps": ["go", "nlopt-static"]
   }
 }
