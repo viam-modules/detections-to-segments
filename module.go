@@ -163,7 +163,7 @@ func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, con
 			return nil, err
 		}
 		// get the 3D detections, and turn them into 2D image and depthmap
-		imgs, _, err := src.Images(ctx)
+		imgs, _, err := src.Images(ctx, nil, nil)
 		if err != nil {
 			return nil, errors.Wrapf(err, "detection segmenter")
 		}
@@ -171,11 +171,18 @@ func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, con
 		var dmimg image.Image
 		for _, i := range imgs {
 			thisI := i
-			if i.SourceName == "color" {
-				img = rimage.ConvertImage(thisI.Image)
+			if thisI.SourceName == "color" {
+				colorImg, err := thisI.Image(ctx)
+				if err != nil {
+					return nil, errors.Wrap(err, "failed to get color image")
+				}
+				img = rimage.ConvertImage(colorImg)
 			}
-			if i.SourceName == "depth" {
-				dmimg = thisI.Image
+			if thisI.SourceName == "depth" {
+				dmimg, err = thisI.Image(ctx)
+				if err != nil {
+					return nil, errors.Wrap(err, "failed to get depth image")
+				}
 			}
 		}
 		if img == nil || dmimg == nil {
