@@ -259,6 +259,12 @@ func DetectionSegmenter(
 				segments = []pointcloud.PointCloud{pc}
 			}
 			for _, cluster := range segments {
+				if cluster.Size() == 0 {
+					continue
+				}
+				if minPoints > 0 && cluster.Size() < minPoints {
+					continue
+				}
 				if client != nil && cameraName != "" {
 					cluster, err = client.TransformPointCloud(ctx, cluster, cameraName, "world")
 					if err != nil {

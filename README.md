@@ -24,21 +24,6 @@ The following attribute template can be used to configure this model:
 }
 ```
 
-#### Attributes
-
-The following attributes are available for this model:
-
-| Name | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| `detector_name` | string | Yes | - | The name of a registered detector vision service. The segmenter uses the detections from this detector to create the 3D segments. |
-| `camera_name` | string | Yes | - | Name of the camera to use. Must provide both color and depth images. |
-| `mean_k` | int | Yes | - | Parameter for the statistical outlier filter on point clouds. Should be set to 5-10% of the minimum segment size. Set to 0 or less to disable filtering. |
-| `sigma` | float | Yes | - | Parameter for the statistical outlier filter. Usually set between 1.0 and 2.0. Lower values produce less noisy results at the risk of losing edge data. 1.25 is a good starting point. |
-| `confidence_threshold_pct` | float | No | `0.5` | A number between 0 and 1. Detections scoring below this threshold are filtered out. |
-| `depth_threshold_mm` | int | No | `0` | Maximum allowed deviation (in mm) from the median depth within a bounding box. Points outside this range are filtered out. Set to 0 to disable. |
-| `min_points_in_segment` | int | No | `0` | Minimum number of points required for a valid segment. Segments with fewer points are discarded. Set to 0 to disable. |
-| `clustering_radius_mm` | float | No | `0` | Radius (in mm) for nearest-neighbor clustering. After plane removal, disconnected groups of points are split into separate objects (each keeping the same detection label). Set to 0 to disable clustering and return one object per detection. |
-
 #### Example Camera Configuration
 ```json
 {
@@ -59,6 +44,7 @@ The following attributes are available for this model:
 ```
 
 #### Example Module Configuration
+
 ```json
 {
   "name": "detections-to-segments",
@@ -72,7 +58,20 @@ The following attributes are available for this model:
     "confidence_threshold_pct": 0.5,
     "depth_threshold_mm": 100,
     "min_points_in_segment": 50,
-    "clustering_radius_mm": 5
+    "clustering_radius_mm": 10
   }
 }
 ```
+
+##### Attributes
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `detector_name` | string | Yes | - | The name of a registered detector vision service. The segmenter uses the detections from this detector to create the 3D segments. |
+| `camera_name` | string | Yes | - | Name of the camera to use. Must provide both color and depth images, and must have intrinsic parameters configured. |
+| `mean_k` | int | Yes | - | Parameter for the statistical outlier filter on point clouds. Should be set to 5-10% of the minimum segment size. Set to 0 or less to disable filtering. |
+| `sigma` | float | Yes | - | Parameter for the statistical outlier filter. Usually set between 1.0 and 2.0. Lower values produce less noisy results at the risk of losing edge data. 1.25 is a good starting point. |
+| `confidence_threshold_pct` | float | No | `0.5` | A number between 0 and 1. Detections scoring below this threshold are filtered out. |
+| `depth_threshold_mm` | int | No | `0` | Maximum allowed deviation (in mm) from the median depth within a bounding box. Points outside this range are filtered out. Set to 0 to disable. |
+| `min_points_in_segment` | int | No | `0` | Minimum number of points required for a valid segment. Segments (and clusters, if clustering is enabled) with fewer points are discarded. Set to 0 to disable. |
+| `clustering_radius_mm` | float | No | `0` | Radius (in mm) for nearest-neighbor clustering. After plane removal, disconnected groups of points are split into separate objects (each keeping the same detection label). Clusters smaller than `min_points_in_segment` are discarded. Set to 0 to disable clustering and return one object per detection. |

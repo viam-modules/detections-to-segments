@@ -54,6 +54,34 @@ async def main():
     vision = VisionClient.from_robot(robot, VISION_SERVICE_NAME)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    # --- Timing comparison ---
+    import time
+
+    services_to_benchmark = [VISION_SERVICE_NAME, "cup-finder-segment"]
+    for svc_name in services_to_benchmark:
+        try:
+            svc = VisionClient.from_robot(robot, svc_name)
+        except Exception as e:
+            print(f"\n  [{svc_name}] not found: {e}")
+            continue
+        times = []
+        n_runs = 3
+        print(f"\n  Benchmarking get_object_point_clouds on '{svc_name}' ({n_runs} runs)...")
+        for i in range(n_runs):
+            t0 = time.time()
+            try:
+                objs = await svc.get_object_point_clouds("", timeout=120)
+                elapsed = (time.time() - t0) * 1000
+                times.append(elapsed)
+                n_objs = len(objs) if objs else 0
+                print(f"    run {i+1}: {elapsed:.0f}ms, {n_objs} objects")
+            except Exception as e:
+                elapsed = (time.time() - t0) * 1000
+                print(f"    run {i+1}: {elapsed:.0f}ms, ERROR: {e}")
+        if times:
+            print(f"    avg: {sum(times)/len(times):.0f}ms, "
+                  f"min: {min(times):.0f}ms, max: {max(times):.0f}ms")
+
     # --- capture_all_from_camera ---
     print(f"\nCalling capture_all_from_camera on '{VISION_SERVICE_NAME}'...")
     try:
