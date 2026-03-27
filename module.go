@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 
+	"github.com/golang/geo/r3"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
@@ -41,6 +42,7 @@ type DetectionSegmenterConfig struct {
 	DefaultCamera      string  `json:"camera_name"`
 	DepthThresholdMm   int     `json:"depth_threshold_mm"`
 	MinPointsInSegment int     `json:"min_points_in_segment"`
+	ClusteringRadiusMm float64 `json:"clustering_radius_mm"`
 }
 
 func init() {
@@ -92,7 +94,8 @@ func register3DSegmenterFromDetector(
 			logger.Warnf("could not connect to machine for frame transforms, point clouds will be in camera frame: %v", err)
 		}
 	}
-	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh, conf.DepthThresholdMm, conf.MinPointsInSegment, client, conf.DefaultCamera)
+	clusterRadius := conf.ClusteringRadiusMm
+	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh, conf.DepthThresholdMm, conf.MinPointsInSegment, clusterRadius, client, conf.DefaultCamera)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create 3D segmenter from detector")
 	}
@@ -164,6 +167,7 @@ func DetectionSegmenter(
 	detector objectdetection.Detector,
 	meanK int, sigma, confidenceThresh float64,
 	depthThresholdMm, minPoints int,
+	clusteringRadiusMm float64,
 	client robot.Robot, cameraName string,
 ) (segmentation.Segmenter, error) {
 	var err error
@@ -247,17 +251,26 @@ func DetectionSegmenter(
 			if minPoints > 0 && pc.Size() < minPoints {
 				continue
 			}
-			if client != nil && cameraName != "" {
-				pc, err = client.TransformPointCloud(ctx, pc, cameraName, "world")
+			// Split into clusters using radius-based nearest neighbors.
+			var segments []pointcloud.PointCloud
+			if clusteringRadiusMm > 0 {
+				segments = clusterPointCloud(pc, clusteringRadiusMm, minPoints)
+			} else {
+				segments = []pointcloud.PointCloud{pc}
+			}
+			for _, cluster := range segments {
+				if client != nil && cameraName != "" {
+					cluster, err = client.TransformPointCloud(ctx, cluster, cameraName, "world")
+					if err != nil {
+						return nil, err
+					}
+				}
+				obj, err := vision.NewObjectWithLabel(cluster, d.Label(), nil)
 				if err != nil {
 					return nil, err
 				}
+				objects = append(objects, obj)
 			}
-			obj, err := vision.NewObjectWithLabel(pc, d.Label(), nil)
-			if err != nil {
-				return nil, err
-			}
-			objects = append(objects, obj)
 		}
 		return objects, nil
 	}
@@ -354,6 +367,51 @@ func depthFilteredPointCloud(
 		}
 	}
 	return pc, nil
+}
+
+// clusterPointCloud splits a point cloud into separate clusters using
+// radius-based nearest neighbors. Each connected group of points (within
+// the given radius) becomes its own point cloud. Clusters smaller than
+// minPoints are discarded.
+func clusterPointCloud(cloud pointcloud.PointCloud, radius float64, minPoints int) []pointcloud.PointCloud {
+	if cloud.Size() == 0 {
+		return nil
+	}
+	kdt := pointcloud.ToKDTree(cloud)
+	clusters := segmentation.NewSegments()
+	c := 0
+	kdt.Iterate(0, 0, func(v r3.Vector, d pointcloud.Data) bool {
+		if _, ok := clusters.Indices[v]; ok {
+			return true
+		}
+		nn := kdt.RadiusNearestNeighbors(v, radius, false)
+		for _, neighbor := range nn {
+			nv := neighbor.P
+			ptIndex, ptOk := clusters.Indices[v]
+			neighborIndex, neighborOk := clusters.Indices[nv]
+			switch {
+			case ptOk && neighborOk:
+				if ptIndex != neighborIndex {
+					clusters.MergeClusters(ptIndex, neighborIndex) //nolint:errcheck
+				}
+			case !ptOk && neighborOk:
+				clusters.AssignCluster(v, d, neighborIndex) //nolint:errcheck
+			case ptOk && !neighborOk:
+				clusters.AssignCluster(neighbor.P, neighbor.D, ptIndex) //nolint:errcheck
+			case !ptOk && !neighborOk:
+				clusters.AssignCluster(v, d, c)           //nolint:errcheck
+				clusters.AssignCluster(nv, neighbor.D, c) //nolint:errcheck
+				c++
+			}
+		}
+		if _, ok := clusters.Indices[v]; !ok {
+			clusters.AssignCluster(v, d, c) //nolint:errcheck
+			c++
+		}
+		return true
+	})
+	clouds := clusters.PointClouds()
+	return pointcloud.PrunePointClouds(clouds, minPoints)
 }
 
 // findDepthCutoff takes a sorted slice of depths and finds a max depth cutoff

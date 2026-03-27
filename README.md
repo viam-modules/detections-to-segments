@@ -1,17 +1,26 @@
 # Detection to Segments Module
 
-This module provides a vision service model takes 2D bounding boxes from an object detector, and, using the intrinsic parameters of the chosen camera, projects the pixels in the bounding box to points in 3D space. If the chosen camera is not equipped to do projections from 2D to 3D, then this vision model will fail. The label and the pixels associated with the 2D detections become the label and point cloud associated with the 3D segmenter.
+This module provides a vision service that takes 2D bounding boxes from an object detector and, using the intrinsic parameters of the chosen camera, projects the pixels in the bounding box to points in 3D space. If the chosen camera is not equipped to do projections from 2D to 3D, then this vision model will fail. The label and the pixels associated with the 2D detections become the label and point cloud associated with the 3D segmenter.
+
+The module also applies several filtering steps to produce clean 3D segments:
+- **Depth gap cutoff**: removes far-away background points (walls, floors) by detecting large gaps in the depth distribution.
+- **RANSAC plane removal**: detects and removes the dominant flat surface (e.g. a table) from each segment.
+- **Clustering**: optionally splits disconnected point clusters into separate objects with the same label.
+- **Frame transform**: if connected to a machine, transforms point clouds from the camera frame to the world frame using the camera's extrinsic parameters.
 
 ### Configuration
 The following attribute template can be used to configure this model:
 
 ```json
 {
-  "sigma": 1.25,
-  "camera_name": "realsense-camera",
   "detector_name": "color-detector-1",
+  "camera_name": "realsense-camera",
+  "mean_k": 5,
+  "sigma": 1.25,
   "confidence_threshold_pct": 0.5,
-  "mean_k": 5
+  "depth_threshold_mm": 0,
+  "min_points_in_segment": 0,
+  "clustering_radius_mm": 0
 }
 ```
 
@@ -19,16 +28,18 @@ The following attribute template can be used to configure this model:
 
 The following attributes are available for this model:
 
-| Name          | Type   | Inclusion | Description                |
-|---------------|--------|-----------|----------------------------|
-| `detector_name` | string  | Required  | The name of a registered detector vision service. The segmenter vision service uses the detections from "detector_name" to create the 3D segments. |
-| `confidence_threshold_pct` | float | Optional  | A number between 0 and 1 which represents a filter on object confidence scores. Detections that score below the threshold will be filtered out in the segmenter. The default is 0.5. |
-| `mean_k` | int | Required  | 	An integer parameter used in a subroutine to eliminate the noise in the point clouds. It should be set to be 5-10% of the minimum segment size. Start with 5% and go up if objects are still too noisy. If you don’t want to use the filtering, set the number to 0 or less. |
-| `sigma` | float | Required  | A floating point parameter used in a subroutine to eliminate the noise in the point clouds. It should usually be set between 1.0 and 2.0. 1.25 is usually a good default. If you want the object result to be less noisy (at the risk of losing some data around its edges) set sigma to be lower. |
-| `camera_name` | string | Required  | Name of the camera to use |
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `detector_name` | string | Yes | - | The name of a registered detector vision service. The segmenter uses the detections from this detector to create the 3D segments. |
+| `camera_name` | string | Yes | - | Name of the camera to use. Must provide both color and depth images. |
+| `mean_k` | int | Yes | - | Parameter for the statistical outlier filter on point clouds. Should be set to 5-10% of the minimum segment size. Set to 0 or less to disable filtering. |
+| `sigma` | float | Yes | - | Parameter for the statistical outlier filter. Usually set between 1.0 and 2.0. Lower values produce less noisy results at the risk of losing edge data. 1.25 is a good starting point. |
+| `confidence_threshold_pct` | float | No | `0.5` | A number between 0 and 1. Detections scoring below this threshold are filtered out. |
+| `depth_threshold_mm` | int | No | `0` | Maximum allowed deviation (in mm) from the median depth within a bounding box. Points outside this range are filtered out. Set to 0 to disable. |
+| `min_points_in_segment` | int | No | `0` | Minimum number of points required for a valid segment. Segments with fewer points are discarded. Set to 0 to disable. |
+| `clustering_radius_mm` | float | No | `0` | Radius (in mm) for nearest-neighbor clustering. After plane removal, disconnected groups of points are split into separate objects (each keeping the same detection label). Set to 0 to disable clustering and return one object per detection. |
 
 #### Example Camera Configuration
-* Note that for a color-detector, the color string must come first in the sensors array.
 ```json
 {
   "name": "realsense-camera",
@@ -50,15 +61,18 @@ The following attributes are available for this model:
 #### Example Module Configuration
 ```json
 {
-  "name": "detections-to-segments-new",
+  "name": "detections-to-segments",
   "api": "rdk:service:vision",
   "model": "viam:vision:detections-to-segments",
   "attributes": {
-    "sigma": 1.25,
-    "camera_name": "realsense-camera",
     "detector_name": "color-detector-1",
+    "camera_name": "realsense-camera",
+    "mean_k": 5,
+    "sigma": 1.25,
     "confidence_threshold_pct": 0.5,
-    "mean_k": 5
+    "depth_threshold_mm": 100,
+    "min_points_in_segment": 50,
+    "clustering_radius_mm": 5
   }
 }
 ```

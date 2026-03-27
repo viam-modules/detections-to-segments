@@ -213,7 +213,7 @@ func TestMinPointsFiltering(t *testing.T) {
 		return []objectdetection.Detection{det}, nil
 	}
 	// minPoints=100 should filter out segments with fewer than 100 points
-	seg, err := DetectionSegmenter(objectdetection.Detector(detector), 1, 1.0, 0.5, 0, 100, nil, "")
+	seg, err := DetectionSegmenter(objectdetection.Detector(detector), 1, 1.0, 0.5, 0, 100, 5.0, nil, "")
 	test.That(t, err, test.ShouldBeNil)
 
 	cam := &inject.Camera{}
@@ -253,7 +253,7 @@ func TestPinholeDeprojection(t *testing.T) {
 		return []objectdetection.Detection{det}, nil
 	}
 	// Use meanK=1, sigma=10.0 (very lenient filter) so points aren't filtered away
-	seg, err := DetectionSegmenter(objectdetection.Detector(detector), 1, 10.0, 0.5, 0, 0, nil, "")
+	seg, err := DetectionSegmenter(objectdetection.Detector(detector), 1, 10.0, 0.5, 0, 0, 0, nil, "")
 	test.That(t, err, test.ShouldBeNil)
 
 	cam := &inject.Camera{}
