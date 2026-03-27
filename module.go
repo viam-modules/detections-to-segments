@@ -5,6 +5,8 @@ package detectionstosegments
 import (
 	"context"
 	"image"
+	"image/color"
+	"slices"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/pkg/errors"
@@ -27,11 +29,13 @@ var DetectionsToSegments = resource.NewModel("viam", "vision", "detections-to-se
 
 // DetectionSegmenterConfig are the optional parameters to turn a detector into a segmenter.
 type DetectionSegmenterConfig struct {
-	DetectorName     string  `json:"detector_name"`
-	ConfidenceThresh float64 `json:"confidence_threshold_pct"`
-	MeanK            int     `json:"mean_k"`
-	Sigma            float64 `json:"sigma"`
-	DefaultCamera    string  `json:"camera_name"`
+	DetectorName       string  `json:"detector_name"`
+	ConfidenceThresh   float64 `json:"confidence_threshold_pct"`
+	MeanK              int     `json:"mean_k"`
+	Sigma              float64 `json:"sigma"`
+	DefaultCamera      string  `json:"camera_name"`
+	DepthThresholdMm   int     `json:"depth_threshold_mm"`
+	MinPointsInSegment int     `json:"min_points_in_segment"`
 }
 
 func init() {
@@ -72,7 +76,7 @@ func register3DSegmenterFromDetector(
 	detector := func(ctx context.Context, img image.Image) ([]objectdetection.Detection, error) {
 		return detectorService.Detections(ctx, img, nil)
 	}
-	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh)
+	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh, conf.DepthThresholdMm, conf.MinPointsInSegment)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create 3D segmenter from detector")
 	}
@@ -142,9 +146,15 @@ func cameraToProjector(
 	return &cameraModel, nil
 }
 
-// DetectionSegmenter will take an objectdetector.Detector and turn it into a Segementer.
+// DetectionSegmenter will take an objectdetector.Detector and turn it into a Segmenter.
 // The params for the segmenter are "mean_k" and "sigma" for the statistical filter on the point clouds.
-func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, confidenceThresh float64) (segmentation.Segmenter, error) {
+// depthThresholdMm filters out background points that deviate from the median depth in the bounding box.
+// minPoints sets the minimum number of points required for a valid segment.
+func DetectionSegmenter(
+	detector objectdetection.Detector,
+	meanK int, sigma, confidenceThresh float64,
+	depthThresholdMm, minPoints int,
+) (segmentation.Segmenter, error) {
 	var err error
 	if detector == nil {
 		return nil, errors.New("detector cannot be nil")
@@ -156,13 +166,11 @@ func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, con
 			return nil, err
 		}
 	}
-	// return the segmenter
 	seg := func(ctx context.Context, src camera.Camera) ([]*vision.Object, error) {
 		proj, err := cameraToProjector(ctx, src)
 		if err != nil {
 			return nil, err
 		}
-		// get the 3D detections, and turn them into 2D image and depthmap
 		imgs, _, err := src.Images(ctx, nil, nil)
 		if err != nil {
 			return nil, errors.Wrapf(err, "detection segmenter")
@@ -203,8 +211,7 @@ func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, con
 			if d.Score() < confidenceThresh {
 				continue
 			}
-			// TODO(bhaney): Is there a way to just project the detection boxes themselves?
-			pc, err := detectionToPointCloud(d, img, dm, proj)
+			pc, err := detectionToPointCloud(d, img, dm, proj, depthThresholdMm)
 			if err != nil {
 				return nil, err
 			}
@@ -216,8 +223,10 @@ func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, con
 				}
 				pc = out
 			}
-			// if object was filtered away, skip it
 			if pc.Size() == 0 {
+				continue
+			}
+			if minPoints > 0 && pc.Size() < minPoints {
 				continue
 			}
 			obj, err := vision.NewObjectWithLabel(pc, d.Label(), nil)
@@ -235,14 +244,87 @@ func detectionToPointCloud(
 	d objectdetection.Detection,
 	im *rimage.Image, dm *rimage.DepthMap,
 	proj transform.Projector,
+	depthThresholdMm int,
 ) (pointcloud.PointCloud, error) {
 	bb := d.BoundingBox()
 	if bb == nil {
 		return nil, errors.New("detection bounding box cannot be nil")
 	}
-	pc, err := proj.RGBDToPointCloud(im, dm, *bb)
-	if err != nil {
-		return nil, err
+	// Use custom deprojection for pinhole cameras to skip zero-depth pixels
+	// and optionally filter background points by depth threshold.
+	switch p := proj.(type) {
+	case *transform.PinholeCameraModel:
+		return depthFilteredPointCloud(*bb, im, dm, p.PinholeCameraIntrinsics, depthThresholdMm)
+	default:
+		// ParallelProjection already skips zero-depth pixels
+		return proj.RGBDToPointCloud(im, dm, *bb)
+	}
+}
+
+// depthFilteredPointCloud projects pixels within a bounding box to 3D, skipping zero-depth pixels
+// and optionally filtering out background points that deviate from the median depth.
+func depthFilteredPointCloud(
+	bb image.Rectangle,
+	img *rimage.Image,
+	dm *rimage.DepthMap,
+	intrinsics *transform.PinholeCameraIntrinsics,
+	depthThresholdMm int,
+) (pointcloud.PointCloud, error) {
+	if img == nil {
+		return nil, errors.New("no rgb image for deprojection")
+	}
+	if dm == nil {
+		return nil, errors.New("no depth map for deprojection")
+	}
+	bounds := bb.Intersect(img.Bounds())
+	startX, startY := bounds.Min.X, bounds.Min.Y
+	endX, endY := bounds.Max.X, bounds.Max.Y
+
+	// First pass: collect non-zero depths to compute the median.
+	depths := make([]int, 0, (endX-startX)*(endY-startY))
+	for y := startY; y < endY; y++ {
+		for x := startX; x < endX; x++ {
+			z := int(dm.GetDepth(x, y))
+			if z > 0 {
+				depths = append(depths, z)
+			}
+		}
+	}
+	if len(depths) == 0 {
+		return pointcloud.NewBasicEmpty(), nil
+	}
+
+	slices.Sort(depths)
+	medianDepth := depths[len(depths)/2]
+
+	// Second pass: project pixels to 3D, filtering by depth.
+	pc := pointcloud.NewBasicEmpty()
+	for y := startY; y < endY; y++ {
+		for x := startX; x < endX; x++ {
+			z := int(dm.GetDepth(x, y))
+			if z == 0 {
+				continue
+			}
+			if depthThresholdMm > 0 {
+				diff := z - medianDepth
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff > depthThresholdMm {
+					continue
+				}
+			}
+			px, py, pz := intrinsics.PixelToPoint(float64(x), float64(y), float64(z))
+			r, g, b := img.GetXY(x, y).RGB255()
+			err := pc.Set(
+				pointcloud.NewVector(px, py, pz),
+				pointcloud.NewColoredData(color.NRGBA{R: r, G: g, B: b, A: 255}),
+			)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	return pc, nil
 }
+
