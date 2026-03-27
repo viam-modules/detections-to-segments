@@ -4,8 +4,10 @@ package detectionstosegments
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"image/color"
+	"os"
 	"slices"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -17,12 +19,15 @@ import (
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/rimage"
 	"go.viam.com/rdk/rimage/transform"
+	"go.viam.com/rdk/robot"
+	"go.viam.com/rdk/robot/client"
 	servicevision "go.viam.com/rdk/services/vision"
 	"go.viam.com/rdk/spatialmath"
 	"go.viam.com/rdk/utils"
 	vision "go.viam.com/rdk/vision"
 	"go.viam.com/rdk/vision/objectdetection"
 	"go.viam.com/rdk/vision/segmentation"
+	rpc "go.viam.com/utils/rpc"
 )
 
 var DetectionsToSegments = resource.NewModel("viam", "vision", "detections-to-segments")
@@ -76,15 +81,20 @@ func register3DSegmenterFromDetector(
 	detector := func(ctx context.Context, img image.Image) ([]objectdetection.Detection, error) {
 		return detectorService.Detections(ctx, img, nil)
 	}
-	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh, conf.DepthThresholdMm, conf.MinPointsInSegment)
-	if err != nil {
-		return nil, errors.Wrap(err, "cannot create 3D segmenter from detector")
-	}
+	var client robot.Robot
 	if conf.DefaultCamera != "" {
 		_, err = camera.FromDependencies(deps, conf.DefaultCamera)
 		if err != nil {
 			return nil, errors.Errorf("could not find camera %q", conf.DefaultCamera)
 		}
+		client, err = connectToMachineFromEnv(ctx, logger)
+		if err != nil {
+			logger.Warnf("could not connect to machine for frame transforms, point clouds will be in camera frame: %v", err)
+		}
+	}
+	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh, conf.DepthThresholdMm, conf.MinPointsInSegment, client, conf.DefaultCamera)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot create 3D segmenter from detector")
 	}
 	return servicevision.NewService(name, deps, logger, nil, nil, detector, segmenter, conf.DefaultCamera)
 }
@@ -154,6 +164,7 @@ func DetectionSegmenter(
 	detector objectdetection.Detector,
 	meanK int, sigma, confidenceThresh float64,
 	depthThresholdMm, minPoints int,
+	client robot.Robot, cameraName string,
 ) (segmentation.Segmenter, error) {
 	var err error
 	if detector == nil {
@@ -226,8 +237,21 @@ func DetectionSegmenter(
 			if pc.Size() == 0 {
 				continue
 			}
+			// Remove the dominant plane (e.g. table surface) via RANSAC.
+			if pc.Size() > 3 {
+				_, nonPlane, planeErr := segmentation.SegmentPlane(ctx, pc, 1000, 10.0)
+				if planeErr == nil && nonPlane.Size() > 0 {
+					pc = nonPlane
+				}
+			}
 			if minPoints > 0 && pc.Size() < minPoints {
 				continue
+			}
+			if client != nil && cameraName != "" {
+				pc, err = client.TransformPointCloud(ctx, pc, cameraName, "world")
+				if err != nil {
+					return nil, err
+				}
 			}
 			obj, err := vision.NewObjectWithLabel(pc, d.Label(), nil)
 			if err != nil {
@@ -296,6 +320,7 @@ func depthFilteredPointCloud(
 
 	slices.Sort(depths)
 	medianDepth := depths[len(depths)/2]
+	maxDepth := findDepthCutoff(depths)
 
 	// Second pass: project pixels to 3D, filtering by depth.
 	pc := pointcloud.NewBasicEmpty()
@@ -303,6 +328,9 @@ func depthFilteredPointCloud(
 		for x := startX; x < endX; x++ {
 			z := int(dm.GetDepth(x, y))
 			if z == 0 {
+				continue
+			}
+			if z > maxDepth {
 				continue
 			}
 			if depthThresholdMm > 0 {
@@ -326,5 +354,53 @@ func depthFilteredPointCloud(
 		}
 	}
 	return pc, nil
+}
+
+// findDepthCutoff takes a sorted slice of depths and finds a max depth cutoff
+// by looking for a rapid gap in the depth distribution. Points closest to the
+// camera belong to the object; a sudden jump in depth indicates background
+// (walls, floors). The heuristic uses the interquartile range (IQR) of the
+// depths seen so far: if a gap between consecutive sorted depths exceeds 2x
+// the IQR, everything beyond that gap is background.
+func findDepthCutoff(sortedDepths []int) int {
+	n := len(sortedDepths)
+	if n < 4 {
+		return sortedDepths[n-1]
+	}
+	q1 := sortedDepths[n/4]
+	q3 := sortedDepths[3*n/4]
+	iqr := q3 - q1
+	if iqr < 1 {
+		iqr = 1
+	}
+	threshold := 2 * iqr
+	for i := 1; i < n; i++ {
+		gap := sortedDepths[i] - sortedDepths[i-1]
+		if gap > threshold {
+			return sortedDepths[i-1]
+		}
+	}
+	return sortedDepths[n-1]
+}
+
+func connectToMachineFromEnv(ctx context.Context, logger logging.Logger) (robot.Robot, error) {
+	host := os.Getenv(utils.MachineFQDNEnvVar)
+	apiKeyID := os.Getenv(utils.APIKeyIDEnvVar)
+	apiKey := os.Getenv(utils.APIKeyEnvVar)
+	if host == "" || apiKeyID == "" || apiKey == "" {
+		return nil, fmt.Errorf("missing required environment variables for machine connection")
+	}
+	return client.New(
+		ctx,
+		host,
+		logger,
+		client.WithDialOptions(rpc.WithEntityCredentials(
+			apiKeyID,
+			rpc.Credentials{
+				Type:    rpc.CredentialsTypeAPIKey,
+				Payload: apiKey,
+			},
+		)),
+	)
 }
 
