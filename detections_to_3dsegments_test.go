@@ -11,6 +11,7 @@ import (
 	"go.viam.com/test"
 
 	"go.viam.com/rdk/components/camera"
+	"go.viam.com/rdk/data"
 	"go.viam.com/rdk/logging"
 	pc "go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/resource"
@@ -38,10 +39,10 @@ func Test3DSegmentsFromDetector(t *testing.T) {
 	test.That(t, err, test.ShouldBeNil)
 	deps[vision.Named("testDetector")] = detectorService
 
-	cam.NextPointCloudFunc = func(ctx context.Context) (pc.PointCloud, error) {
+	cam.NextPointCloudFunc = func(ctx context.Context, extra map[string]interface{}) (pc.PointCloud, error) {
 		return nil, errors.New("no pointcloud")
 	}
-	cam.ImagesFunc = func(ctx context.Context) ([]camera.NamedImage, resource.ResponseMetadata, error) {
+	cam.ImagesFunc = func(ctx context.Context, filterSourceNames []string, extra map[string]interface{}) ([]camera.NamedImage, resource.ResponseMetadata, error) {
 		return nil, resource.ResponseMetadata{}, errors.New("no images")
 	}
 	cam.PropertiesFunc = func(ctx context.Context) (camera.Properties, error) {
@@ -90,7 +91,7 @@ func Test3DSegmentsFromDetector(t *testing.T) {
 	test.That(t, err.Error(), test.ShouldContainSubstring, "no images")
 
 	// successful, creates one object with some points in it
-	cam.ImagesFunc = func(ctx context.Context) ([]camera.NamedImage, resource.ResponseMetadata, error) {
+	cam.ImagesFunc = func(ctx context.Context, filterSourceNames []string, extra map[string]interface{}) ([]camera.NamedImage, resource.ResponseMetadata, error) {
 		img := rimage.NewImage(150, 150)
 		dm := rimage.NewEmptyDepthMap(150, 150)
 		dm.Set(0, 0, rimage.Depth(5))
@@ -99,10 +100,18 @@ func Test3DSegmentsFromDetector(t *testing.T) {
 		dm.Set(50, 100, rimage.Depth(4))
 		dm.Set(15, 15, rimage.Depth(3))
 		dm.Set(16, 14, rimage.Depth(10))
-		imgs := []camera.NamedImage{{img, "color"}, {dm, "depth"}}
+		colorNI, err := camera.NamedImageFromImage(img, "color", "", data.Annotations{})
+		if err != nil {
+			return nil, resource.ResponseMetadata{}, err
+		}
+		depthNI, err := camera.NamedImageFromImage(dm, "depth", "", data.Annotations{})
+		if err != nil {
+			return nil, resource.ResponseMetadata{}, err
+		}
+		imgs := []camera.NamedImage{colorNI, depthNI}
 		return imgs, resource.ResponseMetadata{CapturedAt: time.Now()}, nil
 	}
-	cam.NextPointCloudFunc = func(ctx context.Context) (pc.PointCloud, error) {
+	cam.NextPointCloudFunc = func(ctx context.Context, extra map[string]interface{}) (pc.PointCloud, error) {
 		cloud := pc.NewBasicEmpty()
 		err = cloud.Set(pc.NewVector(0, 0, 5), pc.NewColoredData(color.NRGBA{255, 0, 0, 255}))
 		test.That(t, err, test.ShouldBeNil)
@@ -123,7 +132,9 @@ func Test3DSegmentsFromDetector(t *testing.T) {
 	test.That(t, len(objects), test.ShouldEqual, 1)
 	test.That(t, objects[0].Size(), test.ShouldEqual, 2)
 	// does  implement detector
-	dets, err := seg.Detections(context.Background(), nil, nil)
+	detInput, err := camera.NamedImageFromImage(rimage.NewImage(1, 1), "", "", data.Annotations{})
+	test.That(t, err, test.ShouldBeNil)
+	dets, err := seg.Detections(context.Background(), &detInput, nil)
 	test.That(t, err, test.ShouldBeNil)
 	test.That(t, len(dets), test.ShouldEqual, 1)
 	// does not implement classifier

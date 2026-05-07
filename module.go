@@ -6,10 +6,10 @@ import (
 	"context"
 	"image"
 
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
 	"go.viam.com/rdk/components/camera"
+	"go.viam.com/rdk/data"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/resource"
@@ -17,7 +17,6 @@ import (
 	"go.viam.com/rdk/rimage/transform"
 	servicevision "go.viam.com/rdk/services/vision"
 	"go.viam.com/rdk/spatialmath"
-	"go.viam.com/rdk/utils"
 	vision "go.viam.com/rdk/vision"
 	"go.viam.com/rdk/vision/objectdetection"
 	"go.viam.com/rdk/vision/segmentation"
@@ -61,7 +60,7 @@ func register3DSegmenterFromDetector(
 	if conf == nil {
 		return nil, errors.New("config for 3D segmenter made from a detector cannot be nil")
 	}
-	detectorService, err := servicevision.FromDependencies(deps, conf.DetectorName)
+	detectorService, err := servicevision.FromProvider(deps, conf.DetectorName)
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not find necessary dependency, detector %q", conf.DetectorName)
 	}
@@ -70,14 +69,18 @@ func register3DSegmenterFromDetector(
 		confThresh = conf.ConfidenceThresh
 	}
 	detector := func(ctx context.Context, img image.Image) ([]objectdetection.Detection, error) {
-		return detectorService.Detections(ctx, img, nil)
+		namedImg, err := camera.NamedImageFromImage(img, "", "", data.Annotations{})
+		if err != nil {
+			return nil, err
+		}
+		return detectorService.Detections(ctx, &namedImg, nil)
 	}
 	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create 3D segmenter from detector")
 	}
 	if conf.DefaultCamera != "" {
-		_, err = camera.FromDependencies(deps, conf.DefaultCamera)
+		_, err = camera.FromProvider(deps, conf.DefaultCamera)
 		if err != nil {
 			return nil, errors.Errorf("could not find camera %q", conf.DefaultCamera)
 		}
@@ -107,15 +110,6 @@ func (conf *DetectionSegmenterConfig) Validate(path string) ([]string, []string,
 	}
 
 	return requiredDeps, optionalDeps, nil
-}
-
-// ConvertAttributes changes the AttributeMap input into a DetectionSegmenterConfig.
-func (dsc *DetectionSegmenterConfig) ConvertAttributes(am utils.AttributeMap) error {
-	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{TagName: "json", Result: dsc})
-	if err != nil {
-		return err
-	}
-	return decoder.Decode(am)
 }
 
 func cameraToProjector(
@@ -163,7 +157,7 @@ func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, con
 			return nil, err
 		}
 		// get the 3D detections, and turn them into 2D image and depthmap
-		imgs, _, err := src.Images(ctx)
+		imgs, _, err := src.Images(ctx, nil, nil)
 		if err != nil {
 			return nil, errors.Wrapf(err, "detection segmenter")
 		}
@@ -171,11 +165,19 @@ func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, con
 		var dmimg image.Image
 		for _, i := range imgs {
 			thisI := i
-			if i.SourceName == "color" {
-				img = rimage.ConvertImage(thisI.Image)
-			}
-			if i.SourceName == "depth" {
-				dmimg = thisI.Image
+			switch thisI.SourceName {
+			case "color":
+				colorImg, err := thisI.Image(ctx)
+				if err != nil {
+					return nil, errors.Wrap(err, "decoding color image from camera")
+				}
+				img = rimage.ConvertImage(colorImg)
+			case "depth":
+				depthImg, err := thisI.Image(ctx)
+				if err != nil {
+					return nil, errors.Wrap(err, "decoding depth image from camera")
+				}
+				dmimg = depthImg
 			}
 		}
 		if img == nil || dmimg == nil {
