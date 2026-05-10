@@ -29,11 +29,12 @@ var DetectionsToSegments = resource.NewModel("viam", "vision", "detections-to-se
 
 // DetectionSegmenterConfig are the optional parameters to turn a detector into a segmenter.
 type DetectionSegmenterConfig struct {
-	DetectorName     string  `json:"detector_name"`
-	ConfidenceThresh float64 `json:"confidence_threshold_pct"`
-	MeanK            int     `json:"mean_k"`
-	Sigma            float64 `json:"sigma"`
-	DefaultCamera    string  `json:"camera_name"`
+	DetectorName       string  `json:"detector_name"`
+	ConfidenceThresh   float64 `json:"confidence_threshold_pct"`
+	MeanK              int     `json:"mean_k"`
+	Sigma              float64 `json:"sigma"`
+	DefaultCamera      string  `json:"camera_name"`
+	InferMinimumDepth  bool    `json:"infer_minimum_depth"`
 }
 
 func init() {
@@ -78,7 +79,7 @@ func register3DSegmenterFromDetector(
 		}
 		return detectorService.Detections(ctx, &namedImg, nil)
 	}
-	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh, logger)
+	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh, conf.InferMinimumDepth, logger)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create 3D segmenter from detector")
 	}
@@ -141,6 +142,9 @@ func cameraToProjector(
 
 // DetectionSegmenter will take an objectdetector.Detector and turn it into a Segementer.
 // The params for the segmenter are "mean_k" and "sigma" for the statistical filter on the point clouds.
+// When inferMinimumDepth is true, segments whose observed z-extent is smaller than min(x-extent, y-extent)
+// get an inflated bounding-box geometry of depth min(x-extent, y-extent), extruded in +z from the visible
+// front. The point cloud itself stays as observed.
 //
 // The native-pointcloud path (used when the camera advertises SupportsPCD) assumes the cloud returned by
 // NextPointCloud is already registered to the color sensor's frame; extrinsics from the camera properties
@@ -150,6 +154,7 @@ func DetectionSegmenter(
 	detector objectdetection.Detector,
 	meanK int,
 	sigma, confidenceThresh float64,
+	inferMinimumDepth bool,
 	logger logging.Logger,
 ) (segmentation.Segmenter, error) {
 	var err error
@@ -264,6 +269,13 @@ func DetectionSegmenter(
 			if err != nil {
 				return nil, err
 			}
+			if inferMinimumDepth {
+				if box, err := inflatedDepthBox(pc, d.Label()); err != nil {
+					return nil, err
+				} else if box != nil {
+					obj.Geometry = box
+				}
+			}
 			objects = append(objects, obj)
 		}
 		return objects, nil
@@ -285,6 +297,30 @@ func detectionToPointCloud(
 		return nil, err
 	}
 	return pc, nil
+}
+
+// inflatedDepthBox returns a Box geometry whose depth is at least min(width, height)
+// of the cloud's axis-aligned extent in camera frame, extruded in +z from the visible
+// front. Returns nil if the cloud is empty or its z-extent already meets that target.
+func inflatedDepthBox(cloud pointcloud.PointCloud, label string) (spatialmath.Geometry, error) {
+	if cloud == nil || cloud.Size() == 0 {
+		return nil, nil
+	}
+	meta := cloud.MetaData()
+	width := meta.MaxX - meta.MinX
+	height := meta.MaxY - meta.MinY
+	depth := meta.MaxZ - meta.MinZ
+	target := math.Min(width, height)
+	if depth >= target {
+		return nil, nil
+	}
+	center := r3.Vector{
+		X: (meta.MinX + meta.MaxX) / 2,
+		Y: (meta.MinY + meta.MaxY) / 2,
+		Z: meta.MinZ + target/2,
+	}
+	dims := r3.Vector{X: width, Y: height, Z: target}
+	return spatialmath.NewBox(spatialmath.NewPoseFromPoint(center), dims, label)
 }
 
 // filterPointCloudByDetection returns the subset of points whose projection onto the
