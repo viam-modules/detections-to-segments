@@ -16,6 +16,7 @@ import (
 	pc "go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/rimage"
+	"go.viam.com/rdk/rimage/transform"
 	"go.viam.com/rdk/services/vision"
 	"go.viam.com/rdk/testutils/inject"
 	"go.viam.com/rdk/vision/objectdetection"
@@ -131,6 +132,37 @@ func Test3DSegmentsFromDetector(t *testing.T) {
 	test.That(t, err, test.ShouldBeNil)
 	test.That(t, len(objects), test.ShouldEqual, 1)
 	test.That(t, objects[0].Size(), test.ShouldEqual, 2)
+
+	// native NextPointCloud path: camera advertises SupportsPCD with simple pinhole
+	// intrinsics (Fx=Fy=1, Ppx=Ppy=0, depth=1), so the projection (x/z, y/z) equals
+	// the point's (x, y). The detector returns bbox (10,10)-(20,20), so only points
+	// with x and y in [10, 20) survive the filter.
+	cam.PropertiesFunc = func(ctx context.Context) (camera.Properties, error) {
+		return camera.Properties{
+			SupportsPCD: true,
+			IntrinsicParams: &transform.PinholeCameraIntrinsics{
+				Width: 150, Height: 150,
+				Fx: 1, Fy: 1, Ppx: 0, Ppy: 0,
+			},
+		}, nil
+	}
+	cam.NextPointCloudFunc = func(ctx context.Context, extra map[string]interface{}) (pc.PointCloud, error) {
+		cloud := pc.NewBasicEmpty()
+		for _, p := range []struct{ x, y, z float64 }{
+			{12, 12, 1}, {15, 15, 1}, {18, 18, 1}, // inside bbox
+			{5, 5, 1}, {25, 25, 1}, // outside bbox
+		} {
+			if err := cloud.Set(pc.NewVector(p.x, p.y, p.z), pc.NewColoredData(color.NRGBA{0, 255, 0, 255})); err != nil {
+				return nil, err
+			}
+		}
+		return cloud, nil
+	}
+	objects, err = seg.GetObjectPointClouds(context.Background(), "fakeCamera", map[string]interface{}{})
+	test.That(t, err, test.ShouldBeNil)
+	test.That(t, len(objects), test.ShouldEqual, 1)
+	test.That(t, objects[0].Size(), test.ShouldEqual, 3)
+
 	// does  implement detector
 	detInput, err := camera.NamedImageFromImage(rimage.NewImage(1, 1), "", "", data.Annotations{})
 	test.That(t, err, test.ShouldBeNil)
