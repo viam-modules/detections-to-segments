@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/geo/r3"
 	"github.com/pkg/errors"
 	"go.viam.com/test"
 
@@ -157,6 +158,27 @@ func Test3DSegmentsFromDetector(t *testing.T) {
 			}
 		}
 		return cloud, nil
+	}
+	objects, err = seg.GetObjectPointClouds(context.Background(), "fakeCamera", map[string]interface{}{})
+	test.That(t, err, test.ShouldBeNil)
+	test.That(t, len(objects), test.ShouldEqual, 1)
+	test.That(t, objects[0].Size(), test.ShouldEqual, 3)
+
+	// Extrinsics are intentionally ignored on the native path. We assume the cloud is
+	// already registered to the color frame. If the implementation accidentally went
+	// back through props.PointToPixel, the (100, 100, 0) translation below would shift
+	// every projection out of the bbox and the resulting segment would be empty.
+	cam.PropertiesFunc = func(ctx context.Context) (camera.Properties, error) {
+		return camera.Properties{
+			SupportsPCD: true,
+			IntrinsicParams: &transform.PinholeCameraIntrinsics{
+				Width: 150, Height: 150,
+				Fx: 1, Fy: 1, Ppx: 0, Ppy: 0,
+			},
+			ExtrinsicParams: &camera.ExtrinsicParams{
+				Translation: r3.Vector{X: 100, Y: 100, Z: 0},
+			},
+		}, nil
 	}
 	objects, err = seg.GetObjectPointClouds(context.Background(), "fakeCamera", map[string]interface{}{})
 	test.That(t, err, test.ShouldBeNil)
