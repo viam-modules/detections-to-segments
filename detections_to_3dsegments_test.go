@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/geo/r3"
 	"github.com/pkg/errors"
 	"go.viam.com/test"
 
@@ -164,26 +163,31 @@ func Test3DSegmentsFromDetector(t *testing.T) {
 	test.That(t, len(objects), test.ShouldEqual, 1)
 	test.That(t, objects[0].Size(), test.ShouldEqual, 3)
 
-	// Extrinsics are intentionally ignored on the native path. We assume the cloud is
-	// already registered to the color frame. If the implementation accidentally went
-	// back through props.PointToPixel, the (100, 100, 0) translation below would shift
-	// every projection out of the bbox and the resulting segment would be empty.
-	cam.PropertiesFunc = func(ctx context.Context) (camera.Properties, error) {
-		return camera.Properties{
-			SupportsPCD: true,
-			IntrinsicParams: &transform.PinholeCameraIntrinsics{
-				Width: 150, Height: 150,
-				Fx: 1, Fy: 1, Ppx: 0, Ppy: 0,
-			},
-			ExtrinsicParams: &camera.ExtrinsicParams{
-				Translation: r3.Vector{X: 100, Y: 100, Z: 0},
-			},
-		}, nil
+	// InferMinimumDepth: cloud stays as observed (3 points at z=1), but the segment's
+	// Geometry gets depth = min(width, height) = 6, extruded in +z from the visible
+	// front. Center sits at (15, 15, 4): xy-mean of the 3 in-bbox points, z=minZ+depth/2.
+	// (Extrinsics in PropertiesFunc are ignored by the native path — verified separately
+	// in PR #6's test — so re-registering with InferMinimumDepth still keeps all 3 points.)
+	paramsInferred := &DetectionSegmenterConfig{
+		DetectorName:      "testDetector",
+		ConfidenceThresh:  0.2,
+		DefaultCamera:     "fakeCamera",
+		InferMinimumDepth: true,
 	}
-	objects, err = seg.GetObjectPointClouds(context.Background(), "fakeCamera", map[string]interface{}{})
+	segInferred, err := register3DSegmenterFromDetector(context.Background(), name3, paramsInferred, deps, logger)
+	test.That(t, err, test.ShouldBeNil)
+	objects, err = segInferred.GetObjectPointClouds(context.Background(), "fakeCamera", map[string]interface{}{})
 	test.That(t, err, test.ShouldBeNil)
 	test.That(t, len(objects), test.ShouldEqual, 1)
 	test.That(t, objects[0].Size(), test.ShouldEqual, 3)
+	test.That(t, objects[0].Geometry, test.ShouldNotBeNil)
+	geomProto := objects[0].Geometry.ToProtobuf()
+	test.That(t, geomProto.GetBox().GetDimsMm().GetX(), test.ShouldAlmostEqual, 6.0)
+	test.That(t, geomProto.GetBox().GetDimsMm().GetY(), test.ShouldAlmostEqual, 6.0)
+	test.That(t, geomProto.GetBox().GetDimsMm().GetZ(), test.ShouldAlmostEqual, 6.0)
+	test.That(t, geomProto.GetCenter().GetX(), test.ShouldAlmostEqual, 15.0)
+	test.That(t, geomProto.GetCenter().GetY(), test.ShouldAlmostEqual, 15.0)
+	test.That(t, geomProto.GetCenter().GetZ(), test.ShouldAlmostEqual, 4.0)
 
 	// does  implement detector
 	detInput, err := camera.NamedImageFromImage(rimage.NewImage(1, 1), "", "", data.Annotations{})

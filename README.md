@@ -33,6 +33,7 @@ The following attributes are available for this model:
 | `mean_k` | int | Required  | 	An integer parameter used in a subroutine to eliminate the noise in the point clouds. It should be set to be 5-10% of the minimum segment size. Start with 5% and go up if objects are still too noisy. If you don’t want to use the filtering, set the number to 0 or less. |
 | `sigma` | float | Required  | A floating point parameter used in a subroutine to eliminate the noise in the point clouds. It should usually be set between 1.0 and 2.0. 1.25 is usually a good default. If you want the object result to be less noisy (at the risk of losing some data around its edges) set sigma to be lower. |
 | `camera_name` | string | Required  | Name of the camera to use |
+| `infer_minimum_depth` | bool | Optional  | When `true`, each segment's bounding-box geometry is inflated so its depth is at least `min(width, height)` of the observed cloud, extruded in `+z` from the visible front. Useful when the camera only sees one face of an object: the cloud itself stays as observed, but downstream consumers that read the segment's `Geometry` (e.g. motion planning, obstacle avoidance) get a more reasonable 3D volume. Has no effect when the observed depth already meets `min(width, height)`. Defaults to `false`. |
 
 #### Example Camera Configuration
 * Note that for a color-detector, the color string must come first in the sensors array.
