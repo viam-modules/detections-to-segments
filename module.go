@@ -5,7 +5,10 @@ package detectionstosegments
 import (
 	"context"
 	"image"
+	"math"
+	"sync"
 
+	"github.com/golang/geo/r3"
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
 	"go.viam.com/rdk/components/camera"
@@ -75,7 +78,7 @@ func register3DSegmenterFromDetector(
 		}
 		return detectorService.Detections(ctx, &namedImg, nil)
 	}
-	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh)
+	segmenter, err := DetectionSegmenter(objectdetection.Detector(detector), conf.MeanK, conf.Sigma, confThresh, logger)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create 3D segmenter from detector")
 	}
@@ -138,7 +141,17 @@ func cameraToProjector(
 
 // DetectionSegmenter will take an objectdetector.Detector and turn it into a Segementer.
 // The params for the segmenter are "mean_k" and "sigma" for the statistical filter on the point clouds.
-func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, confidenceThresh float64) (segmentation.Segmenter, error) {
+//
+// The native-pointcloud path (used when the camera advertises SupportsPCD) assumes the cloud returned by
+// NextPointCloud is already registered to the color sensor's frame; extrinsics from the camera properties
+// are deliberately not applied to avoid double-transforming pre-registered clouds (the common case for
+// current Viam drivers like the RealSense). A one-shot INFO log surfaces this assumption at runtime.
+func DetectionSegmenter(
+	detector objectdetection.Detector,
+	meanK int,
+	sigma, confidenceThresh float64,
+	logger logging.Logger,
+) (segmentation.Segmenter, error) {
 	var err error
 	if detector == nil {
 		return nil, errors.New("detector cannot be nil")
@@ -150,13 +163,19 @@ func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, con
 			return nil, err
 		}
 	}
+	// nativeAssumptionOnce fires the first time the native-pointcloud path runs, so the
+	// "cloud is assumed already in color frame" assumption is visible in machine logs.
+	var nativeAssumptionOnce sync.Once
 	// return the segmenter
 	seg := func(ctx context.Context, src camera.Camera) ([]*vision.Object, error) {
-		proj, err := cameraToProjector(ctx, src)
+		props, err := src.Properties(ctx)
 		if err != nil {
-			return nil, err
+			return nil, camera.NewPropertiesError("source camera")
 		}
-		// get the 3D detections, and turn them into 2D image and depthmap
+		// Use the camera's native point cloud when it supports one and we have intrinsics
+		// to project bbox membership; otherwise reconstruct from RGB+depth.
+		useNative := props.SupportsPCD && props.IntrinsicParams != nil
+
 		imgs, _, err := src.Images(ctx, nil, nil)
 		if err != nil {
 			return nil, errors.Wrapf(err, "detection segmenter")
@@ -180,13 +199,35 @@ func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, con
 				dmimg = depthImg
 			}
 		}
-		if img == nil || dmimg == nil {
-			return nil, errors.New("source camera's getImages method did not have 'color' and 'depth' images")
+		if img == nil {
+			return nil, errors.New("source camera's getImages method did not return a 'color' image")
 		}
-		dm, err := rimage.ConvertImageToDepthMap(ctx, dmimg)
-		if err != nil {
-			return nil, err
+
+		var dm *rimage.DepthMap
+		var proj transform.Projector
+		var sourceCloud pointcloud.PointCloud
+		if useNative {
+			nativeAssumptionOnce.Do(func() {
+				logger.Info("native point cloud path: assuming the cloud is already registered to the color frame; camera extrinsic parameters are not applied when projecting points back to the image plane")
+			})
+			sourceCloud, err = src.NextPointCloud(ctx, nil)
+			if err != nil {
+				return nil, errors.Wrap(err, "detection segmenter")
+			}
+		} else {
+			if dmimg == nil {
+				return nil, errors.New("source camera's getImages method did not have 'color' and 'depth' images")
+			}
+			dm, err = rimage.ConvertImageToDepthMap(ctx, dmimg)
+			if err != nil {
+				return nil, err
+			}
+			proj, err = cameraToProjector(ctx, src)
+			if err != nil {
+				return nil, err
+			}
 		}
+
 		im := rimage.CloneImage(img)
 		dets, err := detector(ctx, im) // detector may modify the input image
 		if err != nil {
@@ -198,8 +239,12 @@ func DetectionSegmenter(detector objectdetection.Detector, meanK int, sigma, con
 			if d.Score() < confidenceThresh {
 				continue
 			}
-			// TODO(bhaney): Is there a way to just project the detection boxes themselves?
-			pc, err := detectionToPointCloud(d, img, dm, proj)
+			var pc pointcloud.PointCloud
+			if useNative {
+				pc, err = filterPointCloudByDetection(sourceCloud, d, props.IntrinsicParams)
+			} else {
+				pc, err = detectionToPointCloud(d, img, dm, proj)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -240,4 +285,49 @@ func detectionToPointCloud(
 		return nil, err
 	}
 	return pc, nil
+}
+
+// filterPointCloudByDetection returns the subset of points whose projection onto the
+// camera's image plane falls inside the detection's bounding box. Per-point Data is
+// carried through unchanged, so color is preserved when the source cloud has it.
+//
+// Projection goes through the color intrinsics only — extrinsics are intentionally not
+// applied here. We assume the source cloud is already registered to the color sensor's
+// frame, which is the convention for current Viam camera drivers that produce native
+// point clouds (e.g. RealSense). Applying extrinsics in that case would double-transform
+// and shift projections by the depth↔color baseline. If a future driver returns a cloud
+// in the depth frame, callers must transform it into the color frame before passing in.
+func filterPointCloudByDetection(
+	src pointcloud.PointCloud,
+	d objectdetection.Detection,
+	intrinsics *transform.PinholeCameraIntrinsics,
+) (pointcloud.PointCloud, error) {
+	bb := d.BoundingBox()
+	if bb == nil {
+		return nil, errors.New("detection bounding box cannot be nil")
+	}
+	if intrinsics == nil {
+		return nil, errors.New("intrinsic parameters are required to filter a point cloud by 2D detection")
+	}
+	out := pointcloud.NewBasicEmpty()
+	if src == nil {
+		return out, nil
+	}
+	var iterErr error
+	src.Iterate(0, 0, func(p r3.Vector, dat pointcloud.Data) bool {
+		px, py := intrinsics.PointToPixel(p.X, p.Y, p.Z)
+		pt := image.Point{X: int(math.Round(px)), Y: int(math.Round(py))}
+		if !pt.In(*bb) {
+			return true
+		}
+		if err := out.Set(p, dat); err != nil {
+			iterErr = err
+			return false
+		}
+		return true
+	})
+	if iterErr != nil {
+		return nil, iterErr
+	}
+	return out, nil
 }

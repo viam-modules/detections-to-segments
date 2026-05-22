@@ -1,6 +1,13 @@
 # Detection to Segments Module
 
-This module provides a vision service model takes 2D bounding boxes from an object detector, and, using the intrinsic parameters of the chosen camera, projects the pixels in the bounding box to points in 3D space. If the chosen camera is not equipped to do projections from 2D to 3D, then this vision model will fail. The label and the pixels associated with the 2D detections become the label and point cloud associated with the 3D segmenter.
+This module provides a vision service model that turns 2D detections into 3D point cloud segments.
+
+For each call, it runs the configured detector on the camera's color image to obtain 2D bounding boxes, then produces a 3D point cloud per detection using one of two paths chosen automatically based on the camera's `Properties`:
+
+- **Native point cloud (preferred):** if the camera advertises `SupportsPCD` and exposes intrinsic parameters, the module calls `NextPointCloud` and keeps the points whose projection onto the image plane (using the color camera's intrinsics) falls inside the detection's bounding box. This preserves the fidelity of cameras that produce their own registered/fused point clouds. Per-point color is carried through when the native cloud has it; segments will be uncolored otherwise. **Assumption:** the cloud returned by the driver is already registered to the color sensor's frame — extrinsic parameters from the camera properties are deliberately not applied, to avoid double-transforming pre-aligned clouds (the common case for current Viam drivers like the RealSense). This assumption is logged once per service instance the first time the native path runs. If a driver returns the cloud in the depth frame instead, segments will be shifted by the depth↔color baseline.
+- **RGBD reconstruction (fallback):** if the camera doesn't support `NextPointCloud` (or has no intrinsics), the module falls back to the original behavior — fetching the color and depth images and reprojecting the pixels inside each bounding box to 3D via the camera's intrinsics. Segments are always colored from the RGB frame in this path.
+
+The label of each segment is the label of the originating detection. If the chosen camera supports neither path (no `NextPointCloud` and no usable depth + intrinsics), this vision model will fail.
 
 ### Configuration
 The following attribute template can be used to configure this model:
