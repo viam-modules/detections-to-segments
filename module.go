@@ -29,12 +29,12 @@ var DetectionsToSegments = resource.NewModel("viam", "vision", "detections-to-se
 
 // DetectionSegmenterConfig are the optional parameters to turn a detector into a segmenter.
 type DetectionSegmenterConfig struct {
-	DetectorName       string  `json:"detector_name"`
-	ConfidenceThresh   float64 `json:"confidence_threshold_pct"`
-	MeanK              int     `json:"mean_k"`
-	Sigma              float64 `json:"sigma"`
-	DefaultCamera      string  `json:"camera_name"`
-	InferMinimumDepth  bool    `json:"infer_minimum_depth"`
+	DetectorName      string  `json:"detector_name"`
+	ConfidenceThresh  float64 `json:"confidence_threshold_pct"`
+	MeanK             int     `json:"mean_k"`
+	Sigma             float64 `json:"sigma"`
+	DefaultCamera     string  `json:"camera_name"`
+	InferMinimumDepth bool    `json:"infer_minimum_depth"`
 }
 
 func init() {
