@@ -21,6 +21,7 @@ import (
 	servicevision "go.viam.com/rdk/services/vision"
 	"go.viam.com/rdk/spatialmath"
 	vision "go.viam.com/rdk/vision"
+	"go.viam.com/rdk/vision/detection3d"
 	"go.viam.com/rdk/vision/objectdetection"
 	"go.viam.com/rdk/vision/segmentation"
 )
@@ -89,7 +90,7 @@ func register3DSegmenterFromDetector(
 			return nil, errors.Errorf("could not find camera %q", conf.DefaultCamera)
 		}
 	}
-	return servicevision.NewService(name, deps, logger, nil, nil, detector, segmenter, conf.DefaultCamera)
+	return servicevision.NewService(name, deps, logger, nil, nil, detector, detection3d.FromSegmenter(name.ShortName(), segmenter), conf.DefaultCamera)
 }
 
 func (conf *DetectionSegmenterConfig) Validate(path string) ([]string, []string, error) {
